@@ -83,10 +83,12 @@ The current evaluation uses a 119-sample dataset to compare scheduler behavior a
 
 Deltas are calculated as scheduler measurements minus baseline measurements. Negative deltas indicate lower values; whether that is beneficial depends on the metric.
 
+> **Metric fix (critical):** The `step_time` metric was redefined and the measurement bug fixed in `src/accel_critical.bpf.c`. Previously `step_time` was measured as the wall-clock interval between consecutive dispatches of a task (previous CPU burst + off-CPU wait + queueing delay), which is *not* the CPU-side portion of an iteration and legitimately exceeded iteration latency. It is now measured as the actual CPU execution time per iteration (`running()` start → `stopping()`). All step-time figures reported above (and in any Table II/V derived from the old CSVs) were produced with the buggy definition and are **invalidated**. Regenerate `metrics.csv`/`baseline_metrics.csv` with the fixed scheduler (`sudo ./accel_critical --csv`) and re-run `results.py` before citing any step-time improvement as evidence of scheduler performance.
+
 ### Initial Observations
 
 * Median GPU idle time decreased by 2.30 percentage points.
-* Mean step time decreased by approximately 43.10 ms, while median step time increased.
+* Mean step time: **figure invalidated by the step-time redefinition** — must be regenerated with the fixed measurement (see note above).
 * Mean and p95 iteration latency increased slightly.
 * Runnable-task counts increased relative to the baseline.
 * The correlation between runnable-task count and GPU idle fraction was approximately −0.013, indicating virtually no linear relationship in this dataset.

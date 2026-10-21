@@ -1,5 +1,8 @@
 # Project Review: Adaptive CPU Scheduling for ML Workloads
 
+Time for baseline: 2m5s170ms
+Time for our scehduler: 2m5s42ms
+
 ## 🐛 Bug Analysis: Phase 4 GPU Tracking
 
 ### Identified Bug: Incorrect GPU Active Fraction & Latency Metrics
@@ -9,9 +12,10 @@ There is a logical flaw in how `gpu_active_frac`, `step_time`, and `iter_latency
     *   **Issue**: The `gpu_idle_numerator` is incremented based on whether a task *was* delayed while the GPU was idle. However, it is updated inside `accel_running` every time *any* task starts running. This creates a biased metric that reflects the frequency of task switches rather than the actual temporal fraction of GPU idleness.
     *   **Effect**: The fraction is a "per-dispatch" ratio, not a "per-time" ratio. If the system has many short-running tasks, the metric will be skewed.
 
-2.  **Step Time & Iteration Latency**:
-    *   **Issue**: `STAT_STEP_TIME` and `STAT_ITER_LATENCY` are accumulated as simple sums (`*step_cnt += step_ns / 1000`).
-    *   **Effect**: These stats are monotonically increasing counters of total time, not the *last* measured step time or a moving average. The user-space tool (`accel_critical.c`) reads these as if they are current values, leading to massive, incorrect numbers in the output.
+2.  **Step Time & Iteration Latency** (FIXED):
+    *   **Issue**: `STAT_STEP_TIME` was measured in `accel_running()` as `now - last_run_ts`, i.e. the wall-clock interval between consecutive dispatches of a task (previous CPU burst + off-CPU wait + queueing delay). That is *not* the CPU-side portion of one iteration and necessarily exceeds iteration latency (which only measures enqueue→run queueing), producing the impossible result "step time > iteration latency" in Table V. `STAT_ITER_LATENCY` itself was correct.
+    *   **Fix**: Step time is now measured in `accel_stopping()` as `slice = now - last_run_ts` (the actual CPU execution time for this dispatch), smoothed with the same EMA and folded into the global `STAT_STEP_TIME` stat. The incorrect interval measurement and its global-stat fold were removed from `accel_running()`; iteration-latency tracking is unchanged.
+    *   **Effect on output**: CSV `step_time_us` now reports CPU execution time per iteration instead of the inter-dispatch interval, so it no longer exceeds iteration latency. All previously published step-time figures (Table V, README "Preliminary Evaluation") are invalidated and must be regenerated from CSVs collected with the fixed scheduler.
 
 ### 🛠️ Proposed Bug Fixes
 *   **For `gpu_active_frac`**: Move the numerator/denominator logic to a timer-based update or calculate it based on the actual duration the GPU spent in the `active=0` state vs `active=1` state using the timestamps in `gpu_idle_state`.

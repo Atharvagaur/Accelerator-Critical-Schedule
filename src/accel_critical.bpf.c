@@ -237,18 +237,15 @@ void BPF_STRUCT_OPS(accel_running, struct task_struct *p) {
 	u64 now = bpf_ktime_get_ns();
 	if (!ts) return;
 
-	// 1. Step Time: Time since this task last started running
-	if (ts->last_run_ts > 0) {
-		u64 step_ns = now - ts->last_run_ts;
-		u64 val = ts->ema_step_time;
-		// EMA: Smooth the interval between scheduling events
-		ts->ema_step_time = (val * 7 + (step_ns / 1000)) >> 3;
-
-		// Stall Detection: Log when a task is delayed significantly
-		if (step_ns > 2000000000ULL) {
-			stat_inc(STAT_STALLS);
-		}
-	}
+	// Record the start of this CPU burst. The CPU-side portion of this iteration
+	// (step time) is measured in accel_stopping() as now - last_run_ts, i.e. the
+	// actual time the task spent executing on the CPU for this dispatch.
+	//
+	// Measuring step time here as now - ts->last_run_ts would instead yield the
+	// wall-clock interval between consecutive dispatches (previous CPU burst +
+	// off-CPU wait time + current queueing delay). That is not the CPU-side
+	// portion of one iteration, and it legitimately exceeds iteration latency,
+	// which only measures the enqueue-to-run queueing delay.
 	ts->last_run_ts = now;
 
 	// 2. Iteration Latency: Time from enqueue to running
@@ -292,15 +289,9 @@ void BPF_STRUCT_OPS(accel_running, struct task_struct *p) {
 
 	// REPORTING: Use a simple EMA for global stats.
 	// This eliminates initialization bias and provides a more stable view of system performance.
-	u32 s_idx = STAT_STEP_TIME;
-	u64 *step_cnt = bpf_map_lookup_elem(&stats, &s_idx);
-	if (step_cnt) {
-		u64 global_val = *step_cnt;
-		u64 task_val = ts->ema_step_time;
-		*step_cnt = (global_val * 7 + task_val) >> 3;
-	}
-
-	s_idx = STAT_ITER_LATENCY;
+	// Step time is reported from accel_stopping() (CPU execution time); only
+	// iteration latency is folded into the global stat here.
+	u32 s_idx = STAT_ITER_LATENCY;
 	u64 *iter_cnt = bpf_map_lookup_elem(&stats, &s_idx);
 	if (iter_cnt) {
 		u64 global_val = *iter_cnt;
@@ -317,6 +308,22 @@ void BPF_STRUCT_OPS(accel_stopping, struct task_struct *p, bool runnable) {
 	u64 last_run = ts->last_run_ts;
 	if (now > last_run) {
 		u64 slice = now - last_run;
+
+		// Step Time: CPU-side portion of one iteration = actual CPU execution time
+		// for this dispatch (running() start -> stopping()). This excludes off-CPU
+		// wait time and scheduling queueing delay, which are not CPU work.
+		u64 val = ts->ema_step_time;
+		ts->ema_step_time = (val * 7 + (slice / 1000)) >> 3;
+
+		// Fold per-task step time into the global STAT_STEP_TIME stat.
+		u32 s_idx = STAT_STEP_TIME;
+		u64 *step_cnt = bpf_map_lookup_elem(&stats, &s_idx);
+		if (step_cnt) {
+			u64 global_val = *step_cnt;
+			u64 task_val = ts->ema_step_time;
+			*step_cnt = (global_val * 7 + task_val) >> 3;
+		}
+
 		u64 dsq_vtime = p->scx.dsq_vtime;
 		scx_bpf_task_set_dsq_vtime(p, dsq_vtime + slice);
 
