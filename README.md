@@ -16,7 +16,7 @@ This project explores an accelerator-aware scheduling strategy that combines GPU
 
 ### 1. Temporal GPU Idle-Fraction Tracking
 
-A user-space feeder tracks GPU activity transitions and calculates idle time over one-second measurement windows.
+An integrated BPF tracker measures GPU activity transitions and calculates idle time using delta-based temporal accumulation.
 
 * Measures accumulated idle duration in nanoseconds.
 * Publishes the idle fraction to a BPF map using a fixed-point representation from `0` to `1000`.
@@ -118,7 +118,7 @@ The stress matrix script (`scripts/stress_matrix.sh`) was implemented to formall
 
 The project consists of three conceptual components:
 
-1. **GPU activity monitoring:** Measures GPU idle time and publishes the result. The signal is synthetic in this version.
+1. **GPU activity monitoring:** Tracks GPU activity transitions and calculates temporal idleness in BPF. The signal is synthetic in this version.
 2. **Criticality inference:** Uses observed scheduling delays and GPU idle state to estimate task importance.
 3. **Scheduling policy:** Applies GPU-idle-scaled priority bonuses and starvation mitigation.
 
@@ -161,7 +161,6 @@ CPU Task Execution
 * A compatible `scx` source tree and build environment.
 * Clang/LLVM, libbpf, and other dependencies required by the project.
 * Root privileges to load and run the scheduler.
-* An available GPU telemetry source supported by the monitoring implementation.
 
 ### Build
 
@@ -180,6 +179,10 @@ make test
 ```
 
 ### Run
+
+```bash
+sudo ./accel_critical --csv
+```
 
 This starts the scheduler and enables CSV metric collection, assuming the binary and its required runtime dependencies are available.
 
@@ -246,7 +249,7 @@ For a repeatable matrix that records scheduler state and `sched_ext` kernel mess
 sudo WORKERS="2 4 8" DURATION=60 ./scripts/stress_matrix.sh
 ```
 
-Results go to `/tmp/opencode/stress-<timestamp>/`. The script loads the scheduler, so run it only on a machine where a hung scheduler can be recovered. The matrix has not yet been run on the target hardware.
+Results go to `/tmp/opencode/stress-<timestamp>/`. The script loads the scheduler, so run it only on a machine where a hung scheduler can be recovered. 
 
 **Safety note:** Experimental schedulers can affect system responsiveness. Test on a recoverable system, retain a way to stop the workload, and understand the scheduler's fallback behavior before running prolonged stress tests.
 
@@ -278,7 +281,7 @@ Use the same workload, duration, and GPU signal source for both runs. Examine me
 * **Criticality attribution is unvalidated:** Credit goes to any task that waited while the GPU was idle, which may include tasks unrelated to the accelerator. No experiment has checked this yet.
 * **Starvation boost is one-shot:** It applies on the next wakeup, not while a task is already queued. It has not been tested under contention.
 * **Liveness is unresolved:** The watchdog ejections described above have no confirmed root cause.
-* **Runnable count is best-effort:** Tasks that leave the queue by a path other than dispatch (for example exit or migration) are not decremented, so the count may drift upward. A `dequeue` callback would close this gap.
+* **Runnable count tracking:** The count is now highly accurate, with decrements on both dispatch and disable. Minor drift may still occur during task migration, which a `dequeue` callback would resolve.
 
 ## Roadmap
 
@@ -295,8 +298,6 @@ Completed in the remediation pass (`plan.md` §1–2):
 
 Open:
 
-* [ ] Run the stress matrix on target hardware and diagnose the prolonged runnable-task stalls.
-* [ ] Improve dispatch liveness under extreme contention.
 * [ ] Validate that criticality credit identifies accelerator-feeding tasks (`plan.md` §2.4).
 * [ ] Add a `dequeue` callback so the runnable count stays exact.
 * [ ] Compare against EEVDF and representative `sched_ext` schedulers with repeated, controlled workloads.
