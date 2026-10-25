@@ -21,7 +21,7 @@ BPF_CFLAGS := -g -O2 -Wall -target bpf -D__TARGET_ARCH_$(ARCH) \
 USER_CFLAGS := -g -O2 -Wall -I$(BUILD) -I$(SCX_INC)
 USER_LIBS   := -lbpf -lelf -lz -lpthread
 
-.PHONY: all clean check
+.PHONY: all clean check test
 
 all: $(LOADER)
 
@@ -47,6 +47,10 @@ check:
 	@test -e /sys/kernel/btf/vmlinux || echo "MISSING: /sys/kernel/btf/vmlinux (need CONFIG_DEBUG_INFO_BTF=y)"
 	@test -e /sys/kernel/sched_ext || echo "MISSING: /sys/kernel/sched_ext (need CONFIG_SCHED_CLASS_EXT=y)"
 	@which $(CLANG) $(BPFTOOL) >/dev/null || echo "MISSING: clang and/or bpftool"
+
+# Host-side tests for the analysis script (no kernel or scheduler required).
+test:
+	python3 -m unittest discover -s tests -v
 
 clean:
 	rm -rf $(BUILD) $(LOADER)

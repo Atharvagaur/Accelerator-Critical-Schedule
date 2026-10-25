@@ -23,6 +23,41 @@ There is a logical flaw in how `gpu_active_frac`, `step_time`, and `iter_latency
 
 ---
 
+## 🔍 Additional Issues Found During Code Analysis (status after remediation)
+
+1. **Starvation guard is dead code.** In `accel_enqueue`, `ts->last_runnable_ts` is set to `now` before the check `now - ts->last_runnable_ts > STARVATION_MS * 1e6`, so the condition can never be true. Fix: compare against the *previous* enqueue timestamp (store it before overwriting) or check in `accel_running`.
+
+2. **`STAT_ITER_LATENCY` is folded twice.** `accel_running()` folds the per-task EMA into the global stat, and `accel_stopping()` then folds a raw `now - last_runnable_ts` (enqueue→stop) into the same global stat. Pick one definition (enqueue→run, as in running) and remove the stopping-path fold.
+
+3. **Contention-scaled bonus is not implemented.** `runnable_tasks`/`max_runnable` are maintained and reported, but the bonus in `accel_enqueue` is scaled only by GPU idle duration, not by runnable count. Either implement the documented \(B = B_{\max}\cdot \min(N_r,N_{\text{th}})/N_{\text{th}}\) or drop the claim from the docs.
+
+4. **`STAT_STALLS` is never incremented.** The 2 s stall check lived in the removed step-time block in `accel_running()` and was deleted with it. Re-add it (e.g. on long enqueue→run latency) or remove the stat.
+
+5. **Decay factor mismatch with docs.** Code uses `CRIT_DECAY_FAST = 4` (`>> 4`); an earlier doc draft said `>> 7`. Code is the source of truth; docs updated.
+
+6. **`accel_stopping` reports iteration latency as enqueue→stop.** The raw `iter_ns = now - last_runnable_ts` computed in `accel_stopping()` is not the iteration latency (which is enqueue→run) and should not overwrite the EMA-based value.
+
+### Status after the remediation pass
+
+* **1 (starvation guard):** Fixed. `accel_running()` flags a task whose enqueue-to-run wait exceeds 500 ms. The next `accel_enqueue()` applies the boost. Boost is one-shot and not yet tested under contention.
+* **2 (iteration latency double fold):** Fixed. Only the enqueue-to-run EMA, folded in `accel_running()`, is reported.
+* **3 (contention-scaled bonus):** Deliberately not implemented. GPU-idle scaling is retained (`plan.md` §2.3).
+* **4 (`STAT_STALLS`):** Restored. Counts enqueue-to-run waits above 2 s in `accel_running()`.
+* **5 (decay factor):** Docs corrected to `>> 4`.
+* **6 (enqueue-to-stop latency):** Removed from `accel_stopping()`.
+
+Further fixes made in the same pass:
+
+* `vtime` underflow: bonus and uclamp subtraction now saturate at zero. Previously a `vtime` near 0 could wrap to a huge value and deprioritize the task.
+* Runnable counter: decremented only when `scx_bpf_dsq_move_to_local()` moves a task, not on every dispatch call.
+* `scx_bpf_kick_cpu(-1, ...)` removed. `-1` is not a valid CPU id. The `SCX_ENQ_PREEMPT` flag remains.
+* Criticality bonus: applied, and the preempt flag set, only when the computed bonus is nonzero. Previously a fully active GPU still set the flag.
+* Per-CPU EMA stats are averaged, not summed, in `read_stats()`.
+* `step_time` renamed to `cpu_slice_us` across the BPF, loader, CSV, and analysis.
+
+Open: runnable-count drift without a `dequeue` callback, liveness under contention, and validation of criticality attribution.
+---
+
 ## 🚀 Feature Implementation Guide (from `rp.md`)
 
 ### 1. Criticality Inference
@@ -30,8 +65,7 @@ There is a logical flaw in how `gpu_active_frac`, `step_time`, and `iter_latency
 *   **Step 1**: Track per-task `last_runnable_ts` and `last_run_ts`.
 *   **Step 2**: In `accel_running`, calculate `wait_ns = now - last_runnable_ts`.
 *   **Step 3**: Cross-reference `wait_ns` with the `gpu_idle` map. If the GPU was idle during this window, increment the task's `crit` score.
-*   **Step 4**: Implement a decay function (e.g., `crit = crit - (crit >> 7)`) to ensure historical criticality doesn't permanently prioritize a task.
-
+*   **Step 4**: Implement a decay function (e.g., `crit = crit - (crit >> 4)`, matching `CRIT_DECAY_FAST = 4` in `src/accel_critical.bpf.c`) to ensure historical criticality doesn't permanently prioritize a task.
 ### 2. Contention-Aware Policy
 **Goal**: Only prioritize high-criticality tasks when CPU contention is high.
 *   **Step 1**: Implement a global "contention" signal (e.g., by tracking the number of runnable tasks in the DSQ).

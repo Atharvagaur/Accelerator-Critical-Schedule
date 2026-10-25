@@ -4,7 +4,9 @@ accel_critical
 
 # Metrics and Data
 *.csv
+__pycache__/
 
 # Project Docs (Existing ignores)
 /rp.md
 /review.md
+/plan.md
