@@ -83,7 +83,6 @@ The scheduler was evaluated under CPU contention using `stress-ng` with 16 worke
 *   **Correlations:** The correlation between runnable task count and GPU idleness remains weak (+0.03), suggesting that CPU contention is not the primary driver of GPU idleness in this synthetic configuration.
 
 ## Stability Analysis: The Contention Paradox
-## Stability Analysis: The Contention Paradox
 
 Stress testing with `stress-ng` exposed a potential scheduler-liveness problem under extreme oversubscription.
 
