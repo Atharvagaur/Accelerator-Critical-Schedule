@@ -1,4 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+
+/* Compat: bpf_rcu_callback_t may not be present in older kernel BTF headers */
+typedef int (*bpf_rcu_callback_t)(struct bpf_map *, void *, void *);
+
 #include <scx/common.bpf.h>
 
 char _license[] SEC("license") = "GPL";
@@ -38,6 +42,7 @@ struct task_state {
 	u64 ema_cpu_slice;
 	u64 ema_iter_latency;
 	bool starved;
+	bool is_runnable;
 };
 
 struct {
@@ -72,6 +77,20 @@ struct {
 	__type(key, u32);
 	__type(value, u64);
 } max_runnable SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, u64);
+} max_crit_seen SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, u64);
+} vtime_now SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
@@ -152,7 +171,7 @@ static __always_inline u64 fold_uclamp(u64 vtime, u64 uclamp_min, u64 slice) {
 static __always_inline u64 fold_cgroup_weight(u64 vtime, u32 cgroup_weight, u64 slice) {
 	s64 delta = (s64)slice * (CGROUP_WEIGHT_SCALE - cgroup_weight) / (2 * CGROUP_WEIGHT_SCALE);
 	if (delta > 0) return sat_sub(vtime, (u64)delta);
-	return vtime - delta;
+	return vtime - delta > vtime ? 0 : vtime - delta;
 }
 
 s32 BPF_STRUCT_OPS(accel_select_cpu, struct task_struct *p, s32 prev_cpu, u64 wake_flags) {
@@ -371,6 +390,7 @@ void BPF_STRUCT_OPS(accel_enable, struct task_struct *p) {
 		ts->last_runnable_ts = 0; ts->last_run_ts = 0; ts->last_run_ts_prev = 0;
 		ts->crit = 0; ts->uclamp_min = 0; ts->cgroup_weight = CGROUP_WEIGHT_SCALE;
 		ts->starved = false;
+		ts->is_runnable = false;
 	}
 	scx_bpf_task_set_dsq_vtime(p, get_vtime_now());
 }

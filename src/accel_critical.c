@@ -45,6 +45,7 @@ struct gpu_idle_state {
 #define TASK_TYPE_CPU_NOISE	2
 
 static volatile sig_atomic_t exit_req;
+static bool current_gpu_state_idle;
 
 static void sigint_handler(int sig) { exit_req = 1; }
 
@@ -182,9 +183,18 @@ int main(int argc, char **argv) {
 	signal(SIGINT, sigint_handler);
 	signal(SIGTERM, sigint_handler);
 	
-	skel = SCX_OPS_OPEN(accel_ops, accel_critical);
+	skel = accel_critical__open();
+	if (!skel) {
+		fprintf(stderr, "failed to open scheduler skeleton: %s\n", strerror(errno));
+		return 1;
+	}
 	SCX_OPS_LOAD(skel, accel_ops, accel_critical, uei);
-	// link = SCX_OPS_ATTACH(skel, accel_ops, accel_critical);
+	link = SCX_OPS_ATTACH(skel, accel_ops, accel_critical);
+	if (!link) {
+		fprintf(stderr, "failed to attach scheduler: %s\n", strerror(errno));
+		accel_critical__destroy(skel);
+		return 1;
+	}
 	
 	printf("accel_critical attached. CSV logging: %s. GPU signal: SYNTHETIC. Ctrl-C to exit.\n", csv_fp ? "ON" : "OFF");
 	pthread_create(&feeder_thread, NULL, gpu_idle_feeder, skel);
@@ -225,7 +235,7 @@ int main(int argc, char **argv) {
 	if (csv_fp) fclose(csv_fp);
 	pthread_cancel(feeder_thread);
 	pthread_join(feeder_thread, NULL);
-	// bpf_link__destroy(link);
+	bpf_link__destroy(link);
 	UEI_REPORT(skel, uei);
 	accel_critical__destroy(skel);
 	return 0;
